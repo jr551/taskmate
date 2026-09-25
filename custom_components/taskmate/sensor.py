@@ -1325,11 +1325,60 @@ class PendingApprovalsSensor(TaskMateBaseSensor):
                 })
 
         mandatory_misses = self.coordinator.mandatory_misses_state()
+
+        # Cap every list: HA's recorder drops an entity whose attributes exceed
+        # ~16 KB (this sensor reached 18,789 B and silently lost its history),
+        # so keep only the most recent / most urgent N items. The keys and the
+        # per-item fields stay exactly as consumers expect (approvals card, attr
+        # resolver, automations); the pre-cap counts travel as "<key>_total"
+        # next to a "<key>_truncated" flag.
+        max_chore_completions = 4
+        max_reward_claims = 4
+        max_mandatory_misses = 20
+
+        chore_completions_total = len(completion_details)
+        if chore_completions_total > max_chore_completions:
+            newest = sorted(
+                range(chore_completions_total),
+                key=lambda i: completion_details[i]["completed_at"],
+                reverse=True,
+            )[:max_chore_completions]
+            completion_details = [completion_details[i] for i in sorted(newest)]
+
+        reward_claims_total = len(reward_details)
+        if reward_claims_total > max_reward_claims:
+            newest = sorted(
+                range(reward_claims_total),
+                key=lambda i: reward_details[i]["claimed_at"],
+                reverse=True,
+            )[:max_reward_claims]
+            reward_details = [reward_details[i] for i in sorted(newest)]
+
+        mandatory_misses_total = len(mandatory_misses)
+        if mandatory_misses_total > max_mandatory_misses:
+            # Most urgent first: an escalated miss (stage 3 = parent alerted)
+            # outranks a nudge, newest within the same stage.
+            urgent = sorted(
+                range(mandatory_misses_total),
+                key=lambda i: (
+                    mandatory_misses[i].get("escalation_stage", 0),
+                    mandatory_misses[i].get("created_at", ""),
+                ),
+                reverse=True,
+            )[:max_mandatory_misses]
+            mandatory_misses = [mandatory_misses[i] for i in sorted(urgent)]
+
         return {
             "pending_chore_completions": len(pending_completions),
             "pending_reward_claims": len(pending_rewards),
-            "pending_mandatory_misses": len(mandatory_misses),
+            "pending_mandatory_misses": mandatory_misses_total,
             "chore_completions": completion_details,
+            "chore_completions_total": chore_completions_total,
+            "chore_completions_truncated": chore_completions_total > len(completion_details),
             "reward_claims": reward_details,
+            "reward_claims_total": reward_claims_total,
+            "reward_claims_truncated": reward_claims_total > len(reward_details),
             "mandatory_misses": mandatory_misses,
+            "mandatory_misses_total": mandatory_misses_total,
+            "mandatory_misses_truncated": mandatory_misses_total > len(mandatory_misses),
         }
